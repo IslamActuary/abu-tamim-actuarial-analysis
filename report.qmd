@@ -1,0 +1,154 @@
+---
+title: "تحليل اكتواري وإحصائي لمشروع أبو تميم للعطور"
+subtitle: "Actuarial & Statistical Analysis of Retail Sales and Loss Data"
+author: "Islam Mohammed"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "المحتويات"
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+lang: ar
+dir: rtl
+---
+
+## مقدمة (Introduction)
+
+هذا التقرير يقدّم تحليلاً إحصائياً كاملاً لبيانات مبيعات ومصروفات مشروع تجاري حقيقي
+(محل عطور) على مدار ثلاث سنوات (2023-2025)، باستخدام لغة R والمنهجية الإحصائية
+التي تُستخدم في تسعير التأمين وتقدير المخاطر (Actuarial Risk Analysis).
+
+الهدف: الانتقال من "وصف البيانات" إلى "استنتاجات مدعومة إحصائياً" يمكن الدفاع عنها
+أمام أي جهة تحليلية أو تأمينية.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+library(tidyverse)
+library(readxl)
+library(knitr)
+```
+
+## 1. تجهيز وتنظيف البيانات (Data Preparation)
+
+```{r}
+#| message: false
+data <- read_excel("sales.xlsx")%>%
+  rename(sales_2023 = salse_2023,
+         sales_2024 = salse_2024,
+         sales_2025 = salse_2025) %>%
+  mutate(row_id = row_number())
+
+# تحويل من عريض لطويل مع معرّف صف ثابت — يمنع مشاكل الدمج (many-to-many)
+sales_long <- data %>%
+  pivot_longer(cols = c(sales_2023, sales_2024, sales_2025),
+               names_to = "year", values_to = "sales_value") %>%
+  mutate(year = gsub("sales_", "", year)) %>%
+  select(row_id, year, sales_value)
+
+dead_long <- data %>%
+  pivot_longer(cols = c(dead_2023, dead_2024, dead_2025),
+               names_to = "year", values_to = "dead_value") %>%
+  mutate(year = gsub("dead_", "", year)) %>%
+  select(row_id, year, dead_value)
+
+combined <- left_join(sales_long, dead_long, by = c("row_id", "year")) %>%
+  mutate(
+    year = as.numeric(year),
+    loss_ratio_pct = round((dead_value / sales_value) * 100, 2),
+    high_risk_flag = ifelse(loss_ratio_pct > 50, 1, 0)
+  )
+```
+
+البيانات النهائية تحتوي على `r nrow(combined)` سجل موزعة على ثلاث سنوات، بمفتاح
+دمج فريد (`row_id` + `year`) يضمن دقة كل صف.
+
+## 2. الإحصاء الوصفي (Descriptive Statistics)
+
+```{r}
+#| echo: false
+combined %>%
+  group_by(year) %>%
+  summarise(
+    `متوسط المبيعات` = round(mean(sales_value, na.rm = TRUE), 0),
+    `متوسط الهدر` = round(mean(dead_value, na.rm = TRUE), 0),
+    `الانحراف المعياري للمبيعات` = round(sd(sales_value, na.rm = TRUE), 0)
+  ) %>%
+  kable(caption = "ملخص إحصائي حسب السنة")
+```
+
+```{r}
+#| echo: false
+#| fig-cap: "توزيع المبيعات عبر السنوات الثلاث"
+ggplot(combined, aes(x = factor(year), y = sales_value, fill = factor(year))) +
+  geom_boxplot() +
+  labs(x = "السنة", y = "المبيعات (ريال)", fill = "السنة") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+## 3. اختبار الفرضيات وتحليل التباين (Hypothesis Testing & ANOVA)
+
+هل الفروق الظاهرة بين السنوات حقيقية إحصائياً، أم مجرد تذبذب طبيعي؟
+
+```{r}
+sales_model <- aov(sales_value ~ factor(year), data = combined)
+summary(sales_model)
+```
+
+```{r}
+#| echo: false
+TukeyHSD(sales_model) %>%
+  broom::tidy() %>%
+  kable(caption = "مقارنات ثنائية بين كل زوج سنوات (Tukey HSD)")
+```
+
+**الخلاصة**: الفروق بين 2023 والسنتين التاليتين معنوية إحصائياً (p < 0.05)،
+بينما الفرق بين 2024 و2025 غير معنوي — أي أن المشروع حقق قفزة حقيقية ثم استقر
+على مستوى الأداء الجديد.
+
+## 4. النمذجة التنبؤية (Predictive Modeling)
+
+### 4.1 الانحدار الخطي — العلاقة بين المصروفات والمبيعات
+
+```{r}
+linear_model <- lm(sales_value ~ dead_value, data = combined)
+summary(linear_model)
+```
+
+النموذج يفسر `r round(summary(linear_model)$r.squared * 100, 1)`% من التباين في
+المبيعات. **تنويه منهجي**: هذه علاقة ارتباط قوية، وليست بالضرورة علاقة سببية —
+الأرجح أن المتغيرين يتحركان معاً مع نمو حجم النشاط التجاري ككل.
+
+### 4.2 الانحدار اللوجستي — التنبؤ بمخاطرة ارتفاع نسبة الهدر
+
+```{r}
+model_logit <- glm(high_risk_flag ~ sales_value, data = combined, family = "binomial")
+summary(model_logit)
+```
+
+```{r}
+#| echo: false
+exp(coef(model_logit))
+```
+
+**الخلاصة بأمانة إحصائية**: قيمة المبيعات وحدها لم تظهر كمتنبئ معنوي إحصائياً
+لتصنيف "مخاطرة عالية" (p > 0.05) — وهذه نتيجة مشروعة تستحق التوثيق كما هي، إذ
+تشير إلى ضرورة إدخال متغيرات إضافية في نماذج مستقبلية بدل الاعتماد على متغير واحد.
+
+## 5. الخلاصة والتوصيات (Conclusion & Recommendations)
+
+- نمو المبيعات بين 2023 و2024/2025 **مؤكد إحصائياً**، وليس نتيجة تذبذب عشوائي
+- الأداء استقر بين 2024 و2025 دون فرق معنوي — مؤشر نضج تشغيلي بعد مرحلة النمو السريع
+- العلاقة بين المصروفات والمبيعات قوية (R² ≈ 0.87) لكنها ارتباطية، تحتاج بيانات
+  سببية إضافية لتأكيد الاتجاه
+- نموذج تصنيف المخاطر الحالي بحاجة لمتغيرات إضافية (مثل نوع المنتج، الموسم،
+  طريقة الدفع) لتحسين قوته التنبؤية
+
+---
+
+*تم إعداد هذا التقرير باستخدام R وQuarto كجزء من ملف أعمال (Portfolio) متخصص
+في التحليل الإحصائي والاكتواري.*
